@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeSepAI Image</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+  <style>
+    body { margin:0; padding:1rem; background:#121212; color:#e0e0e0; font-family:sans-serif; display:flex; justify-content:center; }
+    .container { background:#1e1e1e; padding:1.5rem; border-radius:6px; width:100%; max-width:800px; position:relative; }
+    .header-row { display:flex; justify-content:space-between; flex-wrap:wrap; gap:1rem; }
+    .header-left h1 { margin:0; font-size:1.25rem; }
+    .header-left p { margin:0.25rem 0 0; font-size:0.9rem; color:#bbb; }
+    .header-right { text-align:right; }
+    .file-btn{background:#6200ee;color:#fff;padding:.5rem 1rem;border:none;border-radius:4px;cursor:pointer;display:inline-block;}
+    .file-btn input{display:none;}
+    .hint{font-size:.8rem;color:#888;margin-top:.5rem;}
+    .controls{display:flex;gap:.5rem;flex-wrap:wrap;margin:1rem 0;align-items:center;}
+    .controls>*{flex:1;min-width:100px;}
+    .controls button, .controls input[type=text]{padding:.5rem;border:none;border-radius:4px;font-size:.9rem;width:90%;}
+    .controls button{background:#6200ee;color:#fff;cursor:pointer;}
+    .controls input[type=range]{background:#333;height:4px;margin-top:.5rem;-webkit-appearance:none;}
+    .controls label{display:block;font-size:.85rem;margin-bottom:.2rem;}
+    .checkbox-label { flex:0 1 auto; display:flex; align-items:center; gap:0.5rem; white-space:nowrap; }
+    .progress-info{font-size:.85rem;color:#ccc;margin-bottom:.5rem;min-height:1em;}
+    #fileProgress, #zipProgress{width:100%; margin-bottom:1rem;}
+    .info-bar{display:flex;gap:1rem;align-items:center;font-size:.85rem;margin-top:1rem;}
+    .info-swatch{width:24px;height:24px;border:1px solid #888;border-radius:4px;}
+    .previews{display:flex;flex-direction:column;gap:1rem;} @media(min-width:480px){.previews{flex-direction:row;}}
+    .preview-pane{position:relative;flex:1;}
+    .previews img{width:100%;border:1px solid #333;border-radius:4px;cursor:pointer;object-fit:contain;}
+    .nav-btn{position:absolute;top:50%;transform:translateY(-50%);background:rgba(0,0,0,0.5);color:#fff;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:1.2rem;line-height:32px;text-align:center;}
+    .nav-prev{left:8px;} .nav-next{right:8px;}
+    .download-container{text-align:right;margin-top:.5rem;}
+    .download-container a{background:#03dac6;color:#000;padding:.5rem 1rem;border-radius:4px;text-decoration:none;display:inline-block;font-size:.9rem;}
+    .magnifier{display:none;position:absolute;width:100px;height:100px;border:2px solid #fff;border-radius:50%;overflow:hidden;pointer-events:none;box-shadow:0 0 8px rgba(0,0,0,0.5);background-repeat:no-repeat;}
+    canvas{display:none;}
+    .drop-overlay{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,0.1);border:2px dashed #555;border-radius:6px;display:none;align-items:center;justify-content:center;color:#bbb;font-size:1rem;pointer-events:none;}
+  </style>
+</head>
+<body>
+  <div class="container" id="container">
+    <div class="header-row">
+      <div class="header-left">
+        <h1>DeSepAI Image</h1>
+        <p>Upload or batch process images, adjust brightness, detect/sample white point.</p>
+      </div>
+      <div class="header-right">
+        <label class="file-btn">Browse<input type="file" id="upload" accept="image/*" multiple></label>
+        <div class="hint">or drag & drop, or paste an image</div>
+      </div>
+    </div>
+    <div class="controls">
+      <label>Strength: <span id="strengthValue">100%</span><input type="range" id="strength" min="0" max="300" value="100"></label>
+      <label class="checkbox-label"><input type="checkbox" id="notchToggle"> Notch & Whiten Target Color</label>
+      <button id="detectBalance">Detect Balance</button>
+      <button id="zipDownload" style="display:none;">Download All ZIP</button>
+    </div>
+    <div class="progress-info" id="progressInfo"></div>
+    <progress id="fileProgress" max="100" value="0" style="display:none;"></progress>
+    <progress id="zipProgress" max="100" value="0" style="display:none;"></progress>
+    <div class="info-bar">
+      <div>Detected RGB: <span id="detectedRGB">[9,15,27]</span></div>
+      <div id="rgbSwatch" class="info-swatch" style="background:rgb(246,240,228);"></div>
+    </div>
+    <div class="previews">
+      <div class="preview-pane">
+        <button class="nav-btn nav-prev" id="prevBtn">‹</button>
+        <img id="originalPreview" alt="Original">
+        <button class="nav-btn nav-next" id="nextBtn">›</button>
+        <div id="magnifier" class="magnifier"></div>
+      </div>
+      <div class="preview-pane">
+        <img id="processedPreview" alt="Processed">
+        <div class="download-container"><a id="downloadLink" download="shifted.png">Download</a></div>
+      </div>
+    </div>
+    <canvas id="canvas"></canvas>
+    <canvas id="origCanvas"></canvas>
+    <div id="dropOverlay" class="drop-overlay">Drop image to upload</div>
+  </div>
+  <script>
+    let images = [], current = 0, shiftBase = [9,15,27], currentImgObj = null, processedCache = [];
+    const zoom = 4, magSize = 100, magRadius = magSize/2;
+    const container = document.getElementById('container'),
+          upload = document.getElementById('upload'),
+          strength = document.getElementById('strength'),
+          strengthValue = document.getElementById('strengthValue'),
+          notchToggle = document.getElementById('notchToggle'), // Get the checkbox
+          detectBtn = document.getElementById('detectBalance'),
+          zipBtn = document.getElementById('zipDownload'),
+          progressInfo = document.getElementById('progressInfo'),
+          fileProgress = document.getElementById('fileProgress'),
+          zipProgress = document.getElementById('zipProgress'),
+          origCanvas = document.getElementById('origCanvas'), origCtx = origCanvas.getContext('2d'),
+          canvas = document.getElementById('canvas'), ctx = canvas.getContext('2d'),
+          origPreview = document.getElementById('originalPreview'),
+          processedPreview = document.getElementById('processedPreview'),
+          downloadLink = document.getElementById('downloadLink'),
+          detectedRGB = document.getElementById('detectedRGB'),
+          rgbSwatch = document.getElementById('rgbSwatch'),
+          magnifier = document.getElementById('magnifier');
+
+    function updateDisplay(sample, sb) {
+      detectedRGB.textContent = `[${Math.round(sb[0])},${Math.round(sb[1])},${Math.round(sb[2])}]`;
+      rgbSwatch.style.backgroundColor = `rgb(${Math.round(sample[0])},${Math.round(sample[1])},${Math.round(sample[2])})`;
+    }
+
+    function reprocessCurrentImage() {
+      const dataUrl = applyShiftToCanvas();
+      processedCache[current] = dataUrl;
+      processedPreview.src = dataUrl;
+      downloadLink.href = dataUrl;
+      downloadLink.style.display = 'inline-block';
+    }
+
+    origPreview.addEventListener('click', e => {
+      const rect = origPreview.getBoundingClientRect();
+      const x = Math.floor((e.clientX - rect.left) * (origCanvas.width / rect.width));
+      const y = Math.floor((e.clientY - rect.top) * (origCanvas.height / rect.height));
+      const p = origCtx.getImageData(x, y, 1, 1).data;
+      shiftBase = [255 - p[0], 255 - p[1], 255 - p[2]];
+      updateDisplay([p[0], p[1], p[2]], shiftBase);
+      processedCache[current] = null;
+      reprocessCurrentImage();
+    });
+
+    function computeShiftBase() {
+      const perc = 0.9;
+      const data = origCtx.getImageData(0, 0, origCanvas.width, origCanvas.height).data;
+      const lum = [];
+      for (let i = 0; i < data.length; i += 4) lum.push(0.2126 * data[i] + 0.7152 * data[i+1] + 0.0722 * data[i+2]);
+      const sorted = lum.slice().sort((a, b) => a - b);
+      const thresh = sorted[Math.floor(sorted.length * perc)];
+      let sum = [0, 0, 0], count = 0;
+      lum.forEach((l, i) => { if (l >= thresh) { sum[0] += data[i*4]; sum[1] += data[i*4+1]; sum[2] += data[i*4+2]; count++; }});
+      const avg = count ? sum.map(v => v / count) : [255,255,255];
+      shiftBase = [255 - avg[0], 255 - avg[1], 255 - avg[2]];
+      updateDisplay(avg, shiftBase);
+    }
+
+    detectBtn.addEventListener('click', () => {
+      computeShiftBase();
+      reprocessCurrentImage();
+    });
+
+    function applyShiftToCanvas() {
+      const scale = strength.value / 100;
+      const preserveDark = scale > 0.5;
+    
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(currentImgObj, 0, 0);
+      const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      
+      if (notchToggle.checked) {
+        const refR = 255 - shiftBase[0];
+        const refG = 255 - shiftBase[1];
+        const refB = 255 - shiftBase[2];
+        const notch = 8; // or adjustable value
+    
+        for (let i = 0; i < d.data.length; i += 4) {
+          const r = d.data[i], g = d.data[i+1], b = d.data[i+2];
+    
+          if (
+            r >= refR - notch && r <= refR + notch &&
+            g >= refG - notch && g <= refG + notch &&
+            b >= refB - notch && b <= refB + notch
+          ) {
+            // Inside notch: apply FULL correction to white, but respect strength
+            const bri = 0.2126*r + 0.7152*g + 0.0722*b;
+            const att = preserveDark ? Math.min(1, bri / 128) : 1;
+            
+            // Calculate what it would take to make this pixel white
+            const toWhiteR = 255 - r;
+            const toWhiteG = 255 - g;
+            const toWhiteB = 255 - b;
+            
+            // Apply the white correction scaled by strength
+            d.data[i]   = Math.min(255, r + toWhiteR * scale * att);
+            d.data[i+1] = Math.min(255, g + toWhiteG * scale * att);
+            d.data[i+2] = Math.min(255, b + toWhiteB * scale * att);
+          } else {
+            // Outside notch: apply normal shift logic
+            const bri = 0.2126*r + 0.7152*g + 0.0722*b;
+            const att = preserveDark ? Math.min(1, bri / 128) : 1;
+            d.data[i]   = Math.min(255, r + shiftBase[0] * scale * att);
+            d.data[i+1] = Math.min(255, g + shiftBase[1] * scale * att);
+            d.data[i+2] = Math.min(255, b + shiftBase[2] * scale * att);
+          }
+        }
+      } else {
+        // Original logic unchanged
+        for (let i = 0; i < d.data.length; i += 4) {
+          const r = d.data[i], g = d.data[i+1], b = d.data[i+2];
+          const bri = 0.2126*r + 0.7152*g + 0.0722*b;
+          const att = preserveDark ? Math.min(1, bri / 128) : 1;
+          d.data[i]   = Math.min(255, r + shiftBase[0] * scale * att);
+          d.data[i+1] = Math.min(255, g + shiftBase[1] * scale * att);
+          d.data[i+2] = Math.min(255, b + shiftBase[2] * scale * att);
+        }
+      }
+      ctx.putImageData(d, 0, 0);
+      return canvas.toDataURL();
+    }
+    function loadCurrent() {
+      document.getElementById('prevBtn').style.display = current > 0 ? 'block' : 'none';
+      document.getElementById('nextBtn').style.display = current < images.length - 1 ? 'block' : 'none';
+      zipBtn.style.display = images.length > 1 ? 'block' : 'none';
+      origPreview.src = '';
+      processedPreview.src = '';
+      fileProgress.style.display = 'none';
+      zipProgress.style.display = 'none';
+
+      const src = images[current];
+      progressInfo.textContent = `Loading image ${current+1} of ${images.length}...`;
+      currentImgObj = new Image();
+      currentImgObj.onload = () => {
+        origCanvas.width = canvas.width = currentImgObj.width;
+        origCanvas.height = canvas.height = currentImgObj.height;
+        origCtx.drawImage(currentImgObj, 0, 0);
+        origPreview.src = origCanvas.toDataURL();
+        if (processedCache[current]) {
+          processedPreview.src = processedCache[current];
+          downloadLink.href = processedCache[current];
+          downloadLink.style.display = 'inline-block';
+          progressInfo.textContent = '';
+        } else {
+          progressInfo.textContent = `Applying filter to image ${current+1} of ${images.length}...`;
+          setTimeout(() => {
+            reprocessCurrentImage();
+            progressInfo.textContent = '';
+          }, 50);
+        }
+      };
+      currentImgObj.src = src;
+    }
+
+    async function readFiles(files) {
+      images = [];
+      processedCache = [];
+      current = 0;
+      fileProgress.value = 0;
+      fileProgress.style.display = 'block';
+      progressInfo.textContent = `Reading file 1 of ${files.length}`;
+      for (let i = 0; i < files.length; i++) {
+        await new Promise(resolve => {
+          const reader = new FileReader();
+          reader.onprogress = ev => { if (ev.lengthComputable) fileProgress.value = (ev.loaded / ev.total) * 100; };
+          reader.onload = () => { images.push(reader.result); progressInfo.textContent = `Reading file ${i+1} of ${files.length}`; resolve(); };
+          reader.readAsDataURL(files[i]);
+        });
+      }
+      fileProgress.style.display = 'none';
+      progressInfo.textContent = `Loaded ${images.length} images`;
+      loadCurrent();
+    }
+
+    async function zipAll() {
+      zipProgress.value = 0;
+      zipProgress.style.display = 'block';
+      progressInfo.textContent = `Preparing ZIP of ${images.length} images...`;
+      const zip = new JSZip();
+      for (let i = 0; i < images.length; i++) {
+        progressInfo.textContent = `Zipping image ${i+1} of ${images.length}...`;
+        if (!processedCache[i]) {
+          current = i;
+          await new Promise(r => {
+            currentImgObj = new Image();
+            currentImgObj.onload = () => {
+              origCanvas.width = canvas.width = currentImgObj.width;
+              origCanvas.height = canvas.height = currentImgObj.height;
+              origCtx.drawImage(currentImgObj, 0, 0);
+              reprocessCurrentImage();
+              setTimeout(r, 50);
+            };
+            currentImgObj.src = images[i];
+          });
+        }
+        const data = processedCache[i].split(',')[1];
+        zip.file(`image_${i+1}.png`, data, { base64:true });
+      }
+      progressInfo.textContent = 'Generating ZIP...';
+      zip.generateAsync({ type:'blob' }, meta => {
+        zipProgress.value = meta.percent;
+        progressInfo.textContent = `ZIP ${meta.percent.toFixed(0)}%`;
+      }).then(blob => {
+        progressInfo.textContent = 'ZIP complete';
+        zipProgress.style.display = 'none';
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'images.zip';
+        link.click();
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const defaults = ['test1.png', 'test2.png', 'test3.png', 'test4.png', 'test5.png', 'test6.png'];
+      const choice = defaults[Math.floor(Math.random() * defaults.length)];
+      progressInfo.textContent = `Loading default image...`;
+      fetch(choice, { mode: 'cors' })
+        .then(r => r.blob())
+        .then(blob => new Promise(res => {
+          const reader = new FileReader();
+          reader.onload = () => res(reader.result);
+          reader.readAsDataURL(blob);
+        }))
+        .then(dataUrl => {
+          images = [dataUrl];
+          processedCache = [];
+          current = 0;
+          loadCurrent();
+        })
+        .catch(err => {
+          progressInfo.textContent = 'Failed to load default image';
+          console.error(err);
+        });
+    });
+
+    upload.addEventListener('change', e => { if (e.target.files.length) readFiles(e.target.files); });
+    ['dragenter','dragover'].forEach(evt => container.addEventListener(evt, e => { e.preventDefault(); dropOverlay.style.display='flex'; }));
+    ['dragleave','drop'].forEach(evt => container.addEventListener(evt, e => { e.preventDefault(); dropOverlay.style.display='none'; }));
+    container.addEventListener('drop', e => { if (e.dataTransfer.files.length) readFiles(e.dataTransfer.files); });
+    document.addEventListener('paste', e => { for (const it of e.clipboardData.items) if (it.type.includes('image')) { readFiles([it.getAsFile()]); break; }});
+    strength.addEventListener('input', () => strengthValue.textContent = `${strength.value}%`);
+    strength.addEventListener('change', reprocessCurrentImage);
+    notchToggle.addEventListener('change', reprocessCurrentImage); // Reprocess when checkbox changes
+    zipBtn.addEventListener('click', zipAll);
+    document.getElementById('prevBtn').onclick = () => { if (current > 0) { current--; loadCurrent(); }};
+    document.getElementById('nextBtn').onclick = () => { if (current < images.length - 1) { current++; loadCurrent(); }};
+    origPreview.addEventListener('mouseenter', () => magnifier.style.display='block');
+    origPreview.addEventListener('mouseleave', () => magnifier.style.display='none');
+    origPreview.addEventListener('mousemove', e => {
+      const rect = origPreview.getBoundingClientRect();
+      const x = (e.clientX - rect.left) * (origCanvas.width / rect.width);
+      const y = (e.clientY - rect.top) * (origCanvas.height / rect.height);
+      magnifier.style.left = `${e.clientX - rect.left - magRadius}px`;
+      magnifier.style.top = `${e.clientY - rect.top - magRadius}px`;
+      magnifier.style.backgroundImage = `url('${origCanvas.toDataURL()}')`;
+      magnifier.style.backgroundSize = `${origCanvas.width*zoom}px ${origCanvas.height*zoom}px`;
+      magnifier.style.backgroundPosition = `${-x*zoom+magRadius}px ${-y*zoom+magRadius}px`;
+    });
+  </script>
+</body>
+</html>
